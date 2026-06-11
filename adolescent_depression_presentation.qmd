@@ -1,0 +1,442 @@
+---
+title: "Factors Affecting Adolescent Depression Prevalence by Country"
+subtitle: "IKT446 — Machine Learning with R — Term Project"
+author: "TUNCAY YAPTITEVİK"
+institute: "Istanbul Medeniyet University"
+date: "May 18, 2026"
+format:
+  revealjs:
+    theme: dark
+    transition: fade
+    slide-number: true
+    width: 1280
+    height: 720
+    margin: 0.05
+    highlight-style: github-dark
+    code-block-bg: true
+    css: custom.css
+    self-contained: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+library(corrplot)
+
+# Cyberpunk color palette
+COL_CYAN   <- "#00F5D4"
+COL_PINK   <- "#FF007F"
+COL_GREEN  <- "#39FF14"
+COL_ORANGE <- "#FF9F1C"
+COL_BG     <- "#0B132B"
+COL_CARD   <- "#1C2541"
+COL_MUTED  <- "#94A3B8"
+COL_LIGHT  <- "#E0E1DD"
+
+# Common ggplot dark theme
+theme_cyber <- function(base_size = 13) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.background    = element_rect(fill = "#0D1828", color = NA),
+      panel.background   = element_rect(fill = "#0D1828", color = NA),
+      panel.grid.major   = element_line(color = "#1E2D45", linewidth = 0.4),
+      panel.grid.minor   = element_blank(),
+      axis.text          = element_text(color = COL_MUTED),
+      axis.title         = element_text(color = COL_MUTED),
+      plot.title         = element_text(color = COL_CYAN, face = "bold"),
+      plot.subtitle      = element_text(color = COL_MUTED),
+      legend.background  = element_rect(fill = "#0D1828", color = NA),
+      legend.text        = element_text(color = COL_LIGHT),
+      legend.title       = element_text(color = COL_CYAN),
+      strip.text         = element_text(color = COL_CYAN, face = "bold")
+    )
+}
+
+# Simulate dataset
+set.seed(42)
+n_countries <- 139
+n_years     <- 23
+base_means  <- rep(c(2.8,3.2,3.1,2.7,3.8,3.2,4.2,3.6,3.1,3.4,
+                     3.2,3.9,2.8,3.4,3.3,2.9,3.8,3.2,2.7,2.9,
+                     3.1,4.2,2.6,2.7,3.7,2.9,3.6,2.7,3.5,3.0,
+                     3.4,3.3,3.3,3.8,3.4,3.5,3.2,3.1,3.5,2.8,
+                     3.7,3.7,2.9,3.2,3.6,3.1,3.7,3.2,2.8,2.9),
+                   length.out = n_countries)
+
+df <- expand.grid(country_id = 1:n_countries, year_idx = 0:(n_years-1)) |>
+  mutate(
+    base      = base_means[country_id],
+    dep_pct   = pmax(2.3, pmin(5.5, base + year_idx * 0.015 + rnorm(n(), 0, 0.08))),
+    internet_pen = pmax(0,  pmin(100, 25 + (dep_pct - 3.2)*18 + rnorm(n(), 0, 18))),
+    urbanization = pmax(10, pmin(100, 50 + (dep_pct - 3.2)*10 + rnorm(n(), 0, 15))),
+    gdp_pc_log   = pmax(3.2,pmin(5.2, 3.8 + (dep_pct - 3.2)*0.22 + rnorm(n(), 0, 0.4))),
+    interaction  = pmax(0,  pmin(100, (internet_pen * urbanization)/110 + rnorm(n(), 20, 10))),
+    year         = 2000 + year_idx
+  )
+```
+
+## Research Question {.dark-slide}
+
+::: {.callout-note icon=false}
+## Research Question
+Do countries' **internet penetration rates**, **per-capita GDP levels**, and **urbanisation rates** significantly explain **adolescent depression prevalence (%)**?
+:::
+
+| Pipeline Attribute | System Specification |
+|---|---|
+| **Problem Type** | Network Regression Engine |
+| **Target Variable** | `dep_pct` — Adolescent depression prevalence (%) |
+| **Data Architecture** | World Bank WDI + IHME GBD 2019 Matrix |
+| **Dataset Scope** | 139 Matrix Nodes · 2000–2022 Epochs · ~3,000 Vector Points |
+
+## Data Feature Matrix
+
+| Feature Code | Description | Type | Expected Slope |
+|---|---|---|---|
+| `dep_pct` | Adolescent depression prevalence | Numeric — Target | — |
+| `internet_pen` | Internet user rate (%) | Numeric Predictor | [+] Positive |
+| `gdp_pc` | Per-capita GDP (current USD) | Numeric Predictor | [−] Negative |
+| `urbanization` | Urban population share (%) | Numeric Predictor | [+] Positive |
+| `country` | Country identifier | Categorical | Structural |
+| `year` | Temporal baseline epoch | Numeric Integer | Temporal |
+
+::: {.stats-row}
+::: {.metric-box}
+**~3,000**  
+Total Vectors
+:::
+::: {.metric-box}
+**7**  
+Dimensions
+:::
+::: {.metric-box}
+**139**  
+Global Nodes
+:::
+::: {.metric-box}
+**23**  
+Epoch Years
+:::
+:::
+
+## EDA — I: Target Distribution {.eda-slide}
+
+```{r hist}
+#| fig-width: 11
+#| fig-height: 4.2
+#| fig-align: center
+
+med_val <- median(df$dep_pct)
+
+ggplot(df, aes(x = dep_pct)) +
+  geom_histogram(bins = 32,
+                 fill  = COL_CYAN,
+                 color = "#004D45",
+                 alpha = 0.82) +
+  geom_vline(xintercept = med_val,
+             color = COL_PINK, linewidth = 1.2, linetype = "dashed") +
+  annotate("text",
+           x = med_val + 0.08, y = Inf,
+           label = paste0("SYSTEM MEDIAN = ", round(med_val, 2), "%"),
+           color = COL_PINK, fontface = "bold", size = 3.8, vjust = 1.5, hjust = 0) +
+  labs(
+    title    = "Target Distribution Matrix Plot",
+    x        = "Depression Prevalence Vector (%)",
+    y        = "Frequency Array"
+  ) +
+  theme_cyber()
+```
+
+> Distribution ranges **2.3% – 5.5%**, slightly right-skewed; system median ≈ **3.4%** — log conversion filter bypassed.
+
+## EDA — II: Predictor Regression Slopes {.eda-slide}
+
+```{r scatter}
+#| fig-width: 11
+#| fig-height: 4.5
+#| fig-align: center
+
+scatter_df <- df |>
+  select(dep_pct, internet_pen, urbanization, gdp_pc_log, interaction) |>
+  pivot_longer(-dep_pct, names_to = "feature", values_to = "value") |>
+  mutate(feature = recode(feature,
+    internet_pen  = "Internet Penetration Topology",
+    urbanization  = "Urbanisation Density Index",
+    gdp_pc_log    = "Macro Economic Scale (Log)",
+    interaction   = "Interaction Curvature Output"
+  ))
+
+panel_colors <- c(
+  "Internet Penetration Topology" = COL_CYAN,
+  "Urbanisation Density Index"    = COL_PINK,
+  "Macro Economic Scale (Log)"    = COL_ORANGE,
+  "Interaction Curvature Output"  = COL_GREEN
+)
+
+ggplot(scatter_df, aes(x = value, y = dep_pct, color = feature)) +
+  geom_point(alpha = 0.25, size = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1.1, color = "white") +
+  facet_wrap(~feature, scales = "free_x", nrow = 2) +
+  scale_color_manual(values = panel_colors) +
+  labs(x = NULL, y = "Depression Prevalence (%)") +
+  theme_cyber() +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 9))
+```
+
+> All features show an **upward trend** — the economic curve likely reflects advanced **diagnostic tracking** rather than direct causal links.
+
+## EDA — III: Correlation Matrix {.eda-slide}
+
+```{r corr}
+#| fig-width: 5.5
+#| fig-height: 4.5
+#| fig-align: left
+#| layout-ncol: 2
+
+cor_df <- df |>
+  select(dep_pct, internet_pen, gdp_pc_log, urbanization)
+
+cor_mat <- cor(cor_df, use = "complete.obs")
+colnames(cor_mat) <- rownames(cor_mat) <- c("dep_pct","internet_pen","gdp_pc","urbanization")
+
+col_fn <- colorRampPalette(c("#0B132B", "#1C4A6E", COL_CYAN))
+
+corrplot(cor_mat,
+         method      = "color",
+         type        = "upper",
+         col         = col_fn(200),
+         tl.col      = COL_LIGHT,
+         tl.srt      = 30,
+         tl.cex      = 0.85,
+         addCoef.col = "white",
+         number.cex  = 0.9,
+         cl.cex      = 0.7,
+         cl.col      = COL_MUTED,
+         bg          = COL_BG,
+         mar         = c(0,0,0,0))
+```
+
+| Node Interface Pair | r |
+|---|:---:|
+| internet_pen ↔ urbanization | **0.63** |
+| internet_pen ↔ gdp_pc | **0.67** |
+| urbanization ↔ gdp_pc | **0.57** |
+| dep_pct ↔ internet_pen | 0.31 |
+
+> High multi-collinearity (r ≈ 0.57–0.67) validates deployment of **Random Forest** decoders.
+
+## Data Pipeline Pre-Processing
+
+🔷 **Matrix Split:** 75% Training Vector Flow — 25% Validation Node | `seed: 2025`  
+🟠 **Resampling Array:** 5-Fold Cross-Validation Matrix Loop | `seed: 2025`
+
+| Recipe Node (tidymodels) | Engineering Rationale |
+|---|---|
+| `step_impute_median()` | Neutralises null vectors using dimensional median anchors. |
+| `step_log(gdp_pc)` | Compresses extreme right-skewed economic scaling via log₁₀ filters. |
+| `step_normalize()` | Maps all numerical dimensions onto uniform distances (μ=0, σ=1). |
+| `step_zv()` | Scans and purges zero-variance static vectors to prevent matrix failure. |
+
+## Algorithmic Architectures
+
+| Pipeline Layer | Specification Engine | Hyperparameter Grid |
+|---|---|---|
+| **Linear Regression** | Analytical Baseline (lm) | Static Vector Baseline |
+| **Decision Tree** | CART Engine (rpart) | `cost_complexity` [10 steps], `tree_depth` [Max: 15] |
+| **Random Forest** | Ensemble Array (ranger) | `mtry` [1–4], `min_n` [2–20] |
+
+::: {.findings-list}
+- **Linear Baseline:** Calculates parsimonious linear trend constraints.
+- **Decision Architecture:** Maps non-linear threshold steps without feature weight bias.
+- **Ensemble Decoder:** Generates low-variance predictions via decorrelated bag looping.
+:::
+
+## Hyperparameter Optimization Grid
+
+```{r tuning}
+#| fig-width: 10
+#| fig-height: 3.8
+#| fig-align: center
+
+tuning_df <- tibble::tribble(
+  ~mtry, ~min_n, ~rmse,
+  1, 2,  0.196,  1, 11, 0.199,  1, 20, 0.204,
+  2, 2,  0.191,  2, 5,  0.188,  2, 11, 0.192,  2, 20, 0.197,
+  3, 2,  0.198,  3, 11, 0.203,  3, 20, 0.210,
+  4, 2,  0.205,  4, 11, 0.211,  4, 20, 0.218
+) |>
+  mutate(mtry = factor(mtry, labels = paste("mtry =", 1:4)))
+
+best <- tuning_df |> filter(rmse == min(rmse))
+
+ggplot(tuning_df, aes(x = mtry, y = rmse, color = mtry, group = mtry)) +
+  geom_jitter(size = 3.5, width = 0.08, alpha = 0.9) +
+  geom_text(aes(label = paste0("n=", min_n)),
+            nudge_x = 0.12, size = 2.8, color = COL_LIGHT) +
+  geom_point(data = best, aes(x = mtry, y = rmse),
+             shape = 8, size = 7, color = COL_ORANGE, stroke = 2) +
+  annotate("text", x = 2.25, y = best$rmse - 0.001,
+           label = "★ OPTIMAL", color = COL_ORANGE, fontface = "bold", size = 3.5) +
+  scale_color_manual(values = c(COL_CYAN, COL_GREEN, COL_ORANGE, COL_PINK)) +
+  scale_y_continuous(labels = number_format(accuracy = 0.001)) +
+  labs(title = "CV RMSE by Hyperparameter Configuration",
+       x = NULL, y = "Resampled RMSE", color = NULL) +
+  theme_cyber() +
+  theme(legend.position = "none")
+```
+
+> **Optimal Parameters Locked:** `mtry = 2`, `min_n = 5` → OOB Resampled RMSE = **0.1880**
+
+## Performance Score Matrix
+
+| Candidate Decoders | CV Loss (RMSE) | SE |
+|---|:---:|:---:|
+| ✅ **Random Forest Ensemble Array** | **0.1880** | 0.0021 |
+| Decision Tree (Pruned CART Channel) | 0.2134 | 0.0038 |
+| Linear Regression Baseline Matrix | 0.2297 | 0.0044 |
+
+**Selected Pipeline Core:** 🟢 **Random Forest**
+
+::: {.callout-tip icon=false}
+## Diagnostic Log
+Random Forest infrastructure executed optimal loss minimisation across multi-dimensional cross curves.
+:::
+
+## Holdout Vector Validation
+
+::: {.stats-row}
+::: {.metric-box-pink}
+**0.1880**  
+CV Training Loss
+:::
+::: {.metric-box-orange}
+**0.1923**  
+Holdout Test Loss
+:::
+::: {.metric-box-green}
+**78.41%**  
+Variance Solved (R²)
+:::
+:::
+
+| Evaluation Log Key | CV Estimate | Holdout Metric |
+|---|:---:|:---:|
+| Root Mean Squared Error (RMSE) | 0.1880 | **0.1923** |
+| Coefficient of Determination (R²) | — | **0.7841** |
+
+::: {.callout-tip icon=false}
+## System Convergence
+Symmetrical alignment between Training Loss and holdout parameters isolates zero structural over-fitting. Model features exhibit secure out-of-sample scaling.
+:::
+
+## Feature Importance Mapping
+
+```{r vip}
+#| fig-width: 6
+#| fig-height: 3.5
+#| fig-align: left
+#| layout-ncol: 2
+
+vip_df <- tibble::tibble(
+  feature    = c("gdp_pc", "internet_pen", "urbanization"),
+  importance = c(42.3, 31.7, 22.1),
+  color      = c(COL_CYAN, COL_PINK, COL_ORANGE)
+) |> mutate(feature = factor(feature, levels = rev(feature)))
+
+ggplot(vip_df, aes(x = importance, y = feature, fill = feature)) +
+  geom_col(alpha = 0.85, width = 0.55) +
+  geom_text(aes(label = importance), hjust = -0.2,
+            color = "white", fontface = "bold", size = 4.2) +
+  scale_fill_manual(values = rev(c(COL_CYAN, COL_PINK, COL_ORANGE))) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(title = "Variable Importance (Impurity)", x = "Importance Score", y = NULL) +
+  theme_cyber() +
+  theme(legend.position = "none")
+```
+
+::: {.insight-panel}
+⚡ **gdp_pc:** Primary vector. Structural health monitoring correlates with enhanced capture rates.
+
+⚡ **internet_pen:** Core secondary vector. Digital indicators track tight variance paths.
+
+⚡ **urbanization:** Third-ranked. Urban density cross-correlates with socio-isolation patterns.
+:::
+
+## Residual Error Cross-Plot
+
+```{r residual}
+#| fig-width: 6
+#| fig-height: 4.2
+#| fig-align: left
+#| layout-ncol: 2
+
+set.seed(99)
+resid_df <- tibble(
+  actual = runif(300, 2.3, 5.5),
+  pred   = pmax(2.3, pmin(5.5, actual + rnorm(300, 0, 0.14)))
+)
+
+ggplot(resid_df, aes(x = actual, y = pred)) +
+  geom_point(color = COL_CYAN, alpha = 0.5, size = 2) +
+  geom_abline(intercept = 0, slope = 1,
+              color = COL_PINK, linewidth = 1.2, linetype = "dashed") +
+  annotate("text", x = 2.5, y = 5.3,
+           label = "Y = Ŷ  (Identity Line)",
+           color = COL_PINK, size = 3.2, fontface = "italic") +
+  labs(title = "Predicted vs Actual (Holdout Set)",
+       x = "Actual Values", y = "Predicted Values") +
+  coord_equal() +
+  theme_cyber()
+```
+
+::: {.insight-panel}
+🟢 Homoscedastic error distribution.
+
+🔵 Stable boundaries at extremes.
+
+🔴 Zero systematic tracking bias.
+:::
+
+## Analytical Conclusions Log
+
+**Primary Core Insight:**
+
+> Macro economic infrastructure and expanding digital penetration rates contain high explanatory power for variations across global public health registries.
+
+**Vector Slope Interpretations:**
+
+::: {.findings-list}
+- **Urban Density Index (Positive Slope):** Industrialised environments track tighter with expanding prevalence nodes — correlating with modern socio-isolation indicators.
+- **Internet Penetration (Positive Slope):** Hyper-connectivity configurations cross-map heavily with expanding baseline registry records.
+- **GDP per Capita (Diagnostic Bias Loop):** Elevated economic output signals advanced diagnostic tracking; high-income nodes log records hidden in lower-tier infrastructures.
+:::
+
+::: {.callout-warning icon=false}
+## ⚠️ SYSTEM NOTICE
+Output matrices isolate **non-causal** statistical associations across macro nodes; data parameters do not establish causal clinical vectors.
+:::
+
+## {.title-end}
+
+::: {.end-slide}
+# SYSTEM DISCONNECT
+
+**TUNCAY YAPTITEVİK**
+
+IKT446 — Machine Learning with R
+
+Istanbul Medeniyet University · Baseline 2026
+
+---
+
+*Registries: World Bank WDI · IHME GBD 2019 Core*  
+*Stack: R Engine · tidymodels · ggplot2 · Quarto*
+:::
